@@ -29,6 +29,9 @@ use crate::message::OutputData;
 use crate::message::OutputMessage;
 use crate::message::PlanMessage;
 use crate::message::PlanMetadata;
+use std::ops::ControlFlow;
+use tokio_stream::Stream;
+use tokio_stream::StreamExt;
 
 /// Current state of the agent
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,8 +112,9 @@ impl AgentController {
 }
 
 /// The main agent struct
+#[derive(Clone)]
 pub struct Agent {
-    config: AgentConfig,
+    pub(crate) config: AgentConfig,
     conversation_manager: Arc<ConversationManager>,
     controller: AgentController,
 }
@@ -130,6 +134,112 @@ impl Agent {
             conversation_manager,
             controller,
         })
+    }
+    
+    /// Create an agent from a template configuration
+    #[cfg(feature = "templates")]
+    pub fn from_template(config: AgentConfig) -> Result<Self> {
+        Self::new(config)
+    }
+    
+    /// Simple request-response pattern - sends a prompt and collects the complete response
+    pub async fn query(&mut self, prompt: &str) -> Result<String> {
+        let (input_tx, input_rx) = mpsc::channel(1);
+        let (plan_tx, _plan_rx) = mpsc::channel(100);
+        let (output_tx, mut output_rx) = mpsc::channel(100);
+        
+        // Clone self for the execution
+        let agent = Self {
+            config: self.config.clone(),
+            conversation_manager: self.conversation_manager.clone(),
+            controller: AgentController {
+                state: Arc::new(RwLock::new(AgentState::Initialized)),
+                should_stop: Arc::new(AtomicBool::new(false)),
+                turn_counter: Arc::new(AtomicU64::new(0)),
+            },
+        };
+        
+        let handle = agent.execute(input_rx, plan_tx, output_tx).await?;
+        
+        // Send the prompt
+        input_tx.send(prompt.into()).await.map_err(|_| AgentError::ChannelError)?;
+        
+        // Collect the response
+        let mut response = String::new();
+        while let Some(output) = output_rx.recv().await {
+            match output.data {
+                OutputData::Primary(text) | OutputData::PrimaryDelta(text) => {
+                    response.push_str(&text);
+                }
+                OutputData::Completed => break,
+                OutputData::Error(err) => return Err(AgentError::OutputError(err)),
+                _ => {}
+            }
+        }
+        
+        // Stop the agent
+        handle.controller().stop().await;
+        let _ = handle.join().await;
+        
+        Ok(response)
+    }
+    
+    /// Interactive session with callback for each message
+    pub async fn interactive<F>(
+        self,
+        mut handler: F,
+    ) -> Result<(mpsc::Sender<InputMessage>, AgentExecutionHandle)>
+    where
+        F: FnMut(OutputMessage) -> ControlFlow<()> + Send + 'static,
+    {
+        let (input_tx, input_rx) = mpsc::channel(100);
+        let (plan_tx, _plan_rx) = mpsc::channel(100);
+        let (output_tx, mut output_rx) = mpsc::channel(100);
+        
+        let handle = self.execute(input_rx, plan_tx, output_tx).await?;
+        
+        // Spawn handler task
+        tokio::spawn(async move {
+            while let Some(msg) = output_rx.recv().await {
+                if let ControlFlow::Break(()) = handler(msg) {
+                    break;
+                }
+            }
+        });
+        
+        Ok((input_tx, handle))
+    }
+    
+    /// Stream responses as they arrive
+    pub fn stream(
+        self,
+        prompt: String,
+    ) -> impl Stream<Item = Result<OutputMessage>> {
+        let (input_tx, input_rx) = mpsc::channel(1);
+        let (plan_tx, _plan_rx) = mpsc::channel(100);
+        let (output_tx, output_rx) = mpsc::channel(100);
+        
+        // Create the stream
+        let stream = tokio_stream::wrappers::ReceiverStream::new(output_rx)
+            .map(Ok);
+        
+        // Start the agent
+        tokio::spawn(async move {
+            match self.execute(input_rx, plan_tx, output_tx).await {
+                Ok(handle) => {
+                    // Send the prompt
+                    let _ = input_tx.send(prompt.into()).await;
+                    
+                    // Wait for completion
+                    let _ = handle.join().await;
+                }
+                Err(e) => {
+                    error!("Failed to start agent: {}", e);
+                }
+            }
+        });
+        
+        stream
     }
 
     /// Execute the agent with the given input, plan, and output channels

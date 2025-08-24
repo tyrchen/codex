@@ -46,6 +46,25 @@ mod error;
 mod message;
 mod tool;
 
+// Feature-gated modules
+#[cfg(feature = "utils")]
+pub mod processing;
+#[cfg(feature = "utils")]
+pub mod utils;
+
+#[cfg(feature = "templates")]
+pub mod templates;
+
+#[cfg(feature = "session")]
+pub mod session;
+
+#[cfg(feature = "tui")]
+pub mod tui;
+
+// Prelude for convenient imports
+pub mod prelude;
+
+// Core exports
 pub use agent::Agent;
 pub use agent::AgentController;
 pub use agent::AgentExecutionHandle;

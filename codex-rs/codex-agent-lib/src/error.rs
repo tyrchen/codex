@@ -2,6 +2,7 @@
 
 use std::fmt;
 use thiserror::Error;
+use std::error::Error as StdError;
 
 /// Main error type for agent operations
 #[derive(Debug, Error)]
@@ -32,6 +33,12 @@ pub enum AgentError {
 
     #[error("Internal error: {0}")]
     InternalError(String),
+    
+    #[error("Channel error")]
+    ChannelError,
+    
+    #[error("Output error: {0}")]
+    OutputError(#[from] OutputError),
 
     #[error(transparent)]
     CoreError(#[from] codex_core::error::CodexErr),
@@ -82,6 +89,8 @@ impl fmt::Display for OutputError {
         }
     }
 }
+
+impl StdError for OutputError {}
 
 impl From<codex_core::error::CodexErr> for OutputError {
     fn from(err: codex_core::error::CodexErr) -> Self {
