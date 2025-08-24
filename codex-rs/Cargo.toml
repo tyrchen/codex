@@ -3,7 +3,7 @@ members = [
     "ansi-escape",
     "apply-patch",
     "arg0",
-    "cli",
+    "cli", "codex-agent-lib",
     "common",
     "core",
     "exec",
