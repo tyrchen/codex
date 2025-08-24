@@ -16,6 +16,7 @@ pub mod templates {
             .model("gpt-5-mini".to_string())
             .system_prompt(Some(PYTHON_DEVELOPER_PROMPT.to_string()))
             .sandbox_policy(SandboxPolicy::DangerFullAccess)
+            .approval_policy(crate::config::ApprovalPolicy::Never)
             .max_turns(100)
             .build()
     }

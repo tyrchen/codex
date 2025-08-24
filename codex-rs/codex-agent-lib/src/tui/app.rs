@@ -85,7 +85,10 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             input: String::new(),
-            messages: Vec::new(),
+            messages: vec![Message {
+                role: MessageRole::System,
+                content: "Welcome! I'll help you with Python development. Let me set up the environment...".to_string(),
+            }],
             todos: Vec::new(),
             status: "Ready".to_string(),
             tool_output: String::new(),
@@ -263,9 +266,14 @@ impl AgentTui {
         
         // Send initial prompt if provided
         if let Some(prompt) = initial_prompt {
+            // Add the prompt as a user message to the UI
+            self.state.lock().unwrap().add_message(MessageRole::User, prompt.clone());
+            self.state.lock().unwrap().is_processing = true;
+            self.state.lock().unwrap().set_status("Processing...".to_string());
+            
+            // Send the prompt to the agent
             input_tx.send(prompt.into()).await
                 .map_err(|_| crate::error::AgentError::ChannelError)?;
-            self.state.lock().unwrap().is_processing = true;
         }
         
         // Main UI loop
