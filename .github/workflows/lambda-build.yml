@@ -4,8 +4,6 @@
 # AWS Lambda Layers. It includes patches that make prctl(PR_SET_PDEATHSIG)
 # non-fatal, which is required because Lambda's Firecracker seccomp profile
 # blocks this syscall.
-#
-# Trigger manually or on pushes to the lambda-compat branch.
 
 name: lambda-build
 
@@ -13,7 +11,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - "fix/lambda-prctl-compat"
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,7 +35,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            pkg-config libcap-dev musl-tools ca-certificates curl g++ clang libc++-dev libc++abi-dev lld xz-utils
+            pkg-config libcap-dev libubsan1
 
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
@@ -62,6 +60,28 @@ jobs:
           TARGET: aarch64-unknown-linux-musl
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
+      - name: Configure rustc UBSan wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          ubsan=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
+          fi
+          wrapper_root="${RUNNER_TEMP:-/tmp}"
+          wrapper="${wrapper_root}/rustc-ubsan-wrapper"
+          cat > "${wrapper}" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ -n "${ubsan}" ]]; then
+            export LD_PRELOAD="${ubsan}\${LD_PRELOAD:+:\${LD_PRELOAD}}"
+          fi
+          exec "\$1" "\${@:2}"
+          EOF
+          chmod +x "${wrapper}"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
+
       - name: Clear sanitizer flags
         shell: bash
         run: |
@@ -73,6 +93,22 @@ jobs:
           echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
           echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+
+          sanitize_flags() {
+            local input="$1"
+            input="${input//-fsanitize=undefined/}"
+            input="${input//-fno-sanitize-recover=undefined/}"
+            input="${input//-fno-sanitize-trap=undefined/}"
+            echo "$input"
+          }
+
+          cflags="$(sanitize_flags "${CFLAGS-}")"
+          cxxflags="$(sanitize_flags "${CXXFLAGS-}")"
+          echo "CFLAGS=${cflags}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=${cxxflags}" >> "$GITHUB_ENV"
 
       - name: Cargo build
         shell: bash
