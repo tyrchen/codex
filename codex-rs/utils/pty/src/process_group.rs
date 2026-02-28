@@ -24,9 +24,20 @@ use tokio::process::Child;
 ///
 /// This should run in `pre_exec` and uses `parent_pid` captured before spawn to
 /// avoid a race where the parent exits between fork and exec.
+///
+/// On environments where `prctl(PR_SET_PDEATHSIG)` is blocked (e.g. AWS Lambda's
+/// Firecracker seccomp profile), this function gracefully continues instead of
+/// failing, since the parent-death signal is a best-effort cleanup mechanism
+/// and `kill_on_drop(true)` provides a secondary cleanup path.
 pub fn set_parent_death_signal(parent_pid: libc::pid_t) -> io::Result<()> {
     if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } == -1 {
-        return Err(io::Error::last_os_error());
+        let err = io::Error::last_os_error();
+        // EPERM: prctl blocked by seccomp (e.g. AWS Lambda Firecracker).
+        // Fall through gracefully — the parent-death signal is best-effort.
+        if err.raw_os_error() == Some(libc::EPERM) {
+            return Ok(());
+        }
+        return Err(err);
     }
 
     if unsafe { libc::getppid() } != parent_pid {
