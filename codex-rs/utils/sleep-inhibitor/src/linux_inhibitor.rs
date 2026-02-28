@@ -213,9 +213,12 @@ fn spawn_backend(backend: LinuxBackend) -> Result<Child, std::io::Error> {
     unsafe {
         command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::getppid() != parent_pid {
+                let err = std::io::Error::last_os_error();
+                // EPERM: prctl blocked by seccomp (e.g. AWS Lambda).
+                if err.raw_os_error() != Some(libc::EPERM) {
+                    return Err(err);
+                }
+            } else if libc::getppid() != parent_pid {
                 libc::raise(libc::SIGTERM);
             }
             Ok(())

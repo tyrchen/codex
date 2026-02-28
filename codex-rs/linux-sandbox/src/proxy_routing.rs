@@ -606,8 +606,14 @@ fn ensure_loopback_interface_up() -> io::Result<()> {
 fn set_parent_death_signal() -> io::Result<()> {
     let res = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) };
     if res != 0 {
-        Err(io::Error::last_os_error())
-    } else if unsafe { libc::getppid() } == 1 {
+        let err = io::Error::last_os_error();
+        // EPERM: prctl blocked by seccomp (e.g. AWS Lambda Firecracker).
+        if err.raw_os_error() == Some(libc::EPERM) {
+            return Ok(());
+        }
+        return Err(err);
+    }
+    if unsafe { libc::getppid() } == 1 {
         Err(io::Error::other("parent process already exited"))
     } else {
         Ok(())

@@ -1,0 +1,101 @@
+# Build the Codex CLI binary for AWS Lambda (aarch64-unknown-linux-musl).
+#
+# This workflow produces a statically linked binary suitable for use in
+# AWS Lambda Layers. It includes patches that make prctl(PR_SET_PDEATHSIG)
+# non-fatal, which is required because Lambda's Firecracker seccomp profile
+# blocks this syscall.
+#
+# Trigger manually or on pushes to the lambda-compat branch.
+
+name: lambda-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "fix/lambda-prctl-compat"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build codex (aarch64-musl)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: codex-rs
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config libcap-dev musl-tools ca-certificates curl g++ clang libc++-dev libc++abi-dev lld xz-utils
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Use hermetic Cargo home
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install musl build tools
+        env:
+          TARGET: aarch64-unknown-linux-musl
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+
+      - name: Clear sanitizer flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_aarch64_unknown_linux_musl=1" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+
+      - name: Cargo build
+        shell: bash
+        run: |
+          cargo build --target aarch64-unknown-linux-musl --release --bin codex
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-musl/release/codex dist/codex-aarch64-unknown-linux-musl
+          ls -lh dist/codex-aarch64-unknown-linux-musl
+          file dist/codex-aarch64-unknown-linux-musl
+
+      - name: Compress artifact
+        shell: bash
+        run: |
+          cd dist
+          tar -czf codex-aarch64-unknown-linux-musl.tar.gz codex-aarch64-unknown-linux-musl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-lambda-aarch64
+          path: codex-rs/dist/codex-aarch64-unknown-linux-musl.tar.gz
+          retention-days: 90
